@@ -1,0 +1,81 @@
+{
+  "name": "@cbortech/uuid",
+  "version": "0.1.0",
+  "description": "A modern, type-safe TypeScript library for parsing and generating UUIDs (v1-v8, v7-first; RFC 9562).",
+  "keywords": [
+    "uuid",
+    "uuidv7",
+    "rfc9562",
+    "rfc4122"
+  ],
+  "homepage": "https://github.com/cbortech/uuid",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cbortech/uuid.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cbortech/uuid/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "author": "Yasuhiro Kudo <ykudo@ykudo.org>",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "bin": {
+    "uuid": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "prepack": "npm run build",
+    "build": "vite build && vite build --config vite.cli.config.ts",
+    "build:lib": "vite build",
+    "build:cli": "vite build --config vite.cli.config.ts",
+    "watch": "vite build --watch",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.cli.json --noEmit",
+    "start": "node dist/index.js",
+    "dev": "npm run build && npm start",
+    "clean": "node -e \"['dist','coverage','src/__screenshots__'].forEach(d=>require('fs').rmSync(d,{recursive:true,force:true}))\"",
+    "test": "vitest run",
+    "test:node": "vitest run",
+    "test:chromium": "cross-env BROWSER=chromium vitest run --config vitest.browser.config.ts",
+    "test:firefox": "cross-env BROWSER=firefox vitest run --config vitest.browser.config.ts",
+    "test:webkit": "cross-env BROWSER=webkit vitest run --config vitest.browser.config.ts",
+    "test:all": "npm run test:node && npm run test:chromium && npm run test:firefox && npm run test:webkit",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.4",
+    "@vitest/browser": "^4.1.6",
+    "@vitest/browser-playwright": "^4.1.6",
+    "@vitest/coverage-v8": "^4.1.6",
+    "@vitest/ui": "^4.1.6",
+    "cross-env": "^10.1.0",
+    "playwright": "^1.60.0",
+    "prettier": "^3.8.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.13",
+    "vite-plugin-dts": "^4.5.4",
+    "vitest": "^4.1.6"
+  }
+}
