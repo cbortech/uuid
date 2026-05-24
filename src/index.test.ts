@@ -1,4 +1,4 @@
-import { test, expect, describe } from 'vitest';
+import { test, expect, describe, vi } from 'vitest';
 import {
   UUID,
   type UUIDv1Parsed,
@@ -1630,4 +1630,28 @@ describe('UUID.random()', () => {
       expect(uuids[i] > uuids[i - 1]).toBe(true);
     }
   });
+
+  test.runIf(typeof process !== 'undefined')(
+    'should use native randomUUIDv7 when available',
+    async () => {
+      const originalGetBuiltinModule = process.getBuiltinModule;
+      const nativeUUIDv7 = 'ffffffff-ffff-7abc-8def-0123456789ab';
+
+      process.getBuiltinModule = ((id: string) => {
+        if (id === 'node:crypto') {
+          return { randomUUIDv7: () => nativeUUIDv7 };
+        }
+        return originalGetBuiltinModule(id);
+      }) as typeof process.getBuiltinModule;
+
+      try {
+        vi.resetModules();
+        const { UUID: FreshUUID } = await import('./index');
+        expect(FreshUUID.random({ ver: 7 }).toString()).toBe(nativeUUIDv7);
+      } finally {
+        process.getBuiltinModule = originalGetBuiltinModule;
+        vi.resetModules();
+      }
+    }
+  );
 });
