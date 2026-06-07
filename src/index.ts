@@ -319,6 +319,73 @@ const hasNativeFromHex = typeof fromHex === 'function';
 const hasNativeToHex =
   typeof (Uint8Array.prototype as { toHex?: unknown }).toHex === 'function';
 
+type NativeUUIDFunction = (options?: {
+  disableEntropyCache?: boolean;
+}) => string;
+type NativeGetRandomValues = (bytes: Uint8Array) => Uint8Array;
+type NativeCryptoMethods = {
+  getRandomValues?: NativeGetRandomValues;
+  randomUUID?: NativeUUIDFunction;
+  randomUUIDv7?: NativeUUIDFunction;
+};
+
+type GlobalWithNodeProcess = typeof globalThis & {
+  process?: {
+    getBuiltinModule?: (id: string) => unknown;
+  };
+};
+
+type GlobalCryptoWithUUID = Crypto & {
+  randomUUID?: NativeUUIDFunction;
+  randomUUIDv7?: NativeUUIDFunction;
+};
+
+let cachedNativeCryptoMethods: NativeCryptoMethods | undefined;
+
+function getNativeCryptoMethods(): NativeCryptoMethods {
+  if (cachedNativeCryptoMethods) return cachedNativeCryptoMethods;
+
+  const methods: NativeCryptoMethods = {};
+  const globalCrypto =
+    typeof crypto !== 'undefined'
+      ? (crypto as GlobalCryptoWithUUID)
+      : undefined;
+
+  if (typeof globalCrypto?.getRandomValues === 'function') {
+    methods.getRandomValues = globalCrypto.getRandomValues.bind(
+      globalCrypto
+    ) as NativeGetRandomValues;
+  }
+  if (typeof globalCrypto?.randomUUID === 'function') {
+    methods.randomUUID = globalCrypto.randomUUID.bind(globalCrypto);
+  }
+  if (typeof globalCrypto?.randomUUIDv7 === 'function') {
+    methods.randomUUIDv7 = globalCrypto.randomUUIDv7.bind(globalCrypto);
+  }
+
+  const getBuiltinModule = (globalThis as GlobalWithNodeProcess).process
+    ?.getBuiltinModule;
+  if (typeof getBuiltinModule === 'function') {
+    const nodeCrypto = getBuiltinModule('node:crypto') as
+      | (NativeCryptoMethods & { webcrypto?: Crypto })
+      | undefined;
+    if (typeof nodeCrypto?.webcrypto?.getRandomValues === 'function') {
+      methods.getRandomValues ??= nodeCrypto.webcrypto.getRandomValues.bind(
+        nodeCrypto.webcrypto
+      ) as NativeGetRandomValues;
+    }
+    if (typeof nodeCrypto?.randomUUID === 'function') {
+      methods.randomUUID ??= nodeCrypto.randomUUID;
+    }
+    if (typeof nodeCrypto?.randomUUIDv7 === 'function') {
+      methods.randomUUIDv7 = nodeCrypto.randomUUIDv7;
+    }
+  }
+
+  cachedNativeCryptoMethods = methods;
+  return methods;
+}
+
 function bytesToHex(bytes: Uint8Array): string {
   // Use Uint8Array.prototype.toHex if available (newer JavaScript environments)
   if (hasNativeToHex) {
@@ -352,8 +419,9 @@ function hexToBytes(hex: string): Uint8Array {
 
 function getRandomBytes(length: number): Uint8Array {
   const bytes = new Uint8Array(length);
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    crypto.getRandomValues(bytes);
+  const getRandomValues = getNativeCryptoMethods().getRandomValues;
+  if (getRandomValues) {
+    getRandomValues(bytes);
     return bytes;
   }
   // Fallback for environments without crypto
@@ -1126,12 +1194,19 @@ function generateRandomUUID(options?: RandomUUIDOptions): Uint8Array {
   const variant = options?.var ?? 'RFC4122';
 
   let bytes: Uint8Array;
-  if (
-    typeof crypto !== 'undefined' &&
-    typeof crypto.randomUUID === 'function'
-  ) {
-    const uuid = crypto.randomUUID();
-    bytes = parseUUIDString(uuid);
+  const nativeUUID = getNativeCryptoMethods();
+  const nativeRandomUUID =
+    version === 7 && variant === 'RFC4122'
+      ? nativeUUID.randomUUIDv7
+      : nativeUUID.randomUUID;
+  const hasNativeV7Bytes =
+    version === 7 &&
+    variant === 'RFC4122' &&
+    nativeRandomUUID !== undefined &&
+    nativeRandomUUID === nativeUUID.randomUUIDv7;
+
+  if (nativeRandomUUID) {
+    bytes = parseUUIDString(nativeRandomUUID());
   } else {
     // Fallback: generate UUID v4 using getRandomBytes
     bytes = getRandomBytes(16);
@@ -1140,7 +1215,9 @@ function generateRandomUUID(options?: RandomUUIDOptions): Uint8Array {
   if (version === 7) {
     const view = new DataView(bytes.buffer);
     const perf_now = typeof performance !== 'undefined' ? performance.now() : 0;
-    let unix_ts_ms = Date.now();
+    let unix_ts_ms = hasNativeV7Bytes
+      ? view.getUint16(0) * 0x10000_0000 + view.getUint32(2)
+      : Date.now();
     let rand_a = view.getUint16(6) & 0x0fff;
     if (unix_ts_ms <= lastV7.unix_ts_ms) {
       unix_ts_ms = lastV7.unix_ts_ms;
