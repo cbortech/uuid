@@ -32,9 +32,6 @@
       "require": "./dist/index.cjs"
     }
   },
-  "bin": {
-    "uuid": "dist/cli.js"
-  },
   "files": [
     "dist"
   ],
@@ -44,13 +41,9 @@
   },
   "scripts": {
     "prepack": "npm run build",
-    "build": "vite build && vite build --config vite.cli.config.ts",
-    "build:lib": "vite build",
-    "build:cli": "vite build --config vite.cli.config.ts",
+    "build": "vite build",
     "watch": "vite build --watch",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.cli.json --noEmit",
-    "start": "node dist/index.js",
-    "dev": "npm run build && npm start",
+    "typecheck": "tsc --noEmit",
     "clean": "node -e \"['dist','coverage','src/__screenshots__'].forEach(d=>require('fs').rmSync(d,{recursive:true,force:true}))\"",
     "test": "vitest run",
     "test:node": "vitest run",

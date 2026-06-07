@@ -1,8 +1,6 @@
 # @cbortech/uuid
 
-[日本語](./README.ja.md)
-
-TypeScript library and CLI for generating, parsing, and inspecting UUIDs.
+TypeScript library for generating, parsing, and inspecting UUIDs.
 
 This package supports UUID versions 1 through 8 as defined by RFC 9562, with
 convenient helpers for UUID v4 and monotonic UUID v7.
@@ -167,44 +165,8 @@ use `parse()`. It returns a version-specific object.
 
 ## CLI
 
-Use `npx` or `npm exec` to run the CLI without a global install:
-
-```bash
-npx @cbortech/uuid
-npx @cbortech/uuid -v7
-npx @cbortech/uuid inspect 017f22e2-79b0-7cc3-98c4-dc0c0c07398f
-```
-
-If installed globally, the `uuid` command is available directly:
-
-```bash
-npm install -g @cbortech/uuid
-
-uuid
-uuid -v7 -n 5
-uuid parse 017f22e2-79b0-7cc3-98c4-dc0c0c07398f --json
-uuid inspect 017f22e2-79b0-7cc3-98c4-dc0c0c07398f
-uuid validate 017f22e2-79b0-7cc3-98c4-dc0c0c07398f
-```
-
-Commands:
-
-- `generate` or no command: generate a UUID
-- `parse <uuid>`: show UUID fields
-- `inspect <uuid>`: show version, variant, and timestamp when available
-- `validate <uuid>`: validate a UUID string
-
-Options:
-
-- `-v4`: generate UUID v4, the default
-- `-v7`: generate UUID v7
-- `-n <count>`: generate multiple UUIDs
-- `--json`: output JSON
-- `--no-color`: disable color
-- `-h, --help`: show help
-- `-v, --version`: show version
-
-A bare UUID argument without a subcommand is treated as `parse`.
+A command-line interface built on this package is available as
+[@cbortech/uuid-cli](https://www.npmjs.com/package/@cbortech/uuid-cli).
 
 ## Runtime
 

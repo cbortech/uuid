@@ -1,8 +1,6 @@
 # @cbortech/uuid
 
-[English](./README.md)
-
-UUIDの生成、解析、確認を行うためのTypeScriptライブラリおよびCLIです。
+UUIDの生成、解析、確認を行うためのTypeScriptライブラリです。
 
 RFC 9562で定義されているUUIDバージョン1から8に対応しています。UUID v4と、
 単調増加するUUID v7を簡単に扱うためのヘルパーも提供します。
@@ -167,44 +165,8 @@ UUID v2ではタイムスタンプの一部がローカル識別子で置き換�
 
 ## CLI
 
-グローバルインストールせずに使う場合は、`npx` または `npm exec` を利用できます。
-
-```bash
-npx @cbortech/uuid
-npx @cbortech/uuid -v7
-npx @cbortech/uuid inspect 017f22e2-79b0-7cc3-98c4-dc0c0c07398f
-```
-
-グローバルインストールすると、`uuid` コマンドを直接利用できます。
-
-```bash
-npm install -g @cbortech/uuid
-
-uuid
-uuid -v7 -n 5
-uuid parse 017f22e2-79b0-7cc3-98c4-dc0c0c07398f --json
-uuid inspect 017f22e2-79b0-7cc3-98c4-dc0c0c07398f
-uuid validate 017f22e2-79b0-7cc3-98c4-dc0c0c07398f
-```
-
-コマンド:
-
-- `generate` またはコマンドなし: UUIDを生成
-- `parse <uuid>`: UUIDの各フィールドを表示
-- `inspect <uuid>`: バージョン、バリアント、利用可能な場合はタイムスタンプを表示
-- `validate <uuid>`: UUID文字列を検証
-
-オプション:
-
-- `-v4`: UUID v4を生成。デフォルトです
-- `-v7`: UUID v7を生成
-- `-n <count>`: 複数のUUIDを生成
-- `--json`: JSONで出力
-- `--no-color`: 色付き出力を無効化
-- `-h, --help`: ヘルプを表示
-- `-v, --version`: バージョンを表示
-
-サブコマンドなしでUUID引数を渡した場合は、`parse` として扱われます。
+このパッケージをベースにしたコマンドラインツールを
+[@cbortech/uuid-cli](https://www.npmjs.com/package/@cbortech/uuid-cli) として公開しています。
 
 ## 実行環境
 
