@@ -1,6 +1,6 @@
 {
   "name": "@cbortech/uuid",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A modern, type-safe TypeScript library for parsing and generating UUIDs (v1-v8, v7-first; RFC 9562).",
   "keywords": [
     "uuid",
