@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [
     dts({
       include: ['src/**/*'],
-      exclude: ['src/**/*.test.ts', 'src/cli.ts'],
+      exclude: ['src/**/*.test.ts'],
       outDir: 'dist',
       rollupTypes: true,
     }),
