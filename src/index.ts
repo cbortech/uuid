@@ -310,13 +310,6 @@ export type UUIDInput = UUID | string | UUIDBytes | UUIDOptions | null;
 // Utility Functions
 // =============================================================================
 
-const fromHex = (
-  Uint8Array as typeof Uint8Array & {
-    fromHex?: (hex: string) => Uint8Array;
-  }
-).fromHex;
-const hasNativeFromHex = typeof fromHex === 'function';
-
 // Lookup table: byte value -> two-character lowercase hex string
 const byteToHex: string[] = [];
 for (let i = 0; i < 256; i++) {
@@ -373,19 +366,15 @@ function getNativeGetRandomValues(): NativeGetRandomValues | null {
   return getRandomValues;
 }
 
+// Converts regex-validated hex (even length, hex digits only) to bytes.
+// Deliberately not Uint8Array.fromHex: for UUID-sized inputs the native
+// call overhead makes it several times slower than this loop.
 function hexToBytes(hex: string): Uint8Array {
-  // Use Uint8Array.fromHex if available (newer JavaScript environments)
-  if (hasNativeFromHex) {
-    return fromHex(hex);
-  }
-  // Fallback implementation for older environments
   const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length / 2; i++) {
-    const i1 = hex.charCodeAt(i * 2);
-    const i2 = hex.charCodeAt(i * 2 + 1);
+  for (let i = 0; i < bytes.length; i++) {
     bytes[i] =
-      ((i1 >= 97 ? i1 - 87 : i1 >= 65 ? i1 - 55 : i1 - 48) << 4) +
-      (i2 >= 97 ? i2 - 87 : i2 >= 65 ? i2 - 55 : i2 - 48);
+      (hexValue[hex.charCodeAt(i * 2)] << 4) |
+      hexValue[hex.charCodeAt(i * 2 + 1)];
   }
   return bytes;
 }
