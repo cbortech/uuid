@@ -316,18 +316,24 @@ const fromHex = (
   }
 ).fromHex;
 const hasNativeFromHex = typeof fromHex === 'function';
-const hasNativeToHex =
-  typeof (Uint8Array.prototype as { toHex?: unknown }).toHex === 'function';
 
-type NativeUUIDFunction = (options?: {
-  disableEntropyCache?: boolean;
-}) => string;
+// Lookup table: byte value -> two-character lowercase hex string
+const byteToHex: string[] = [];
+for (let i = 0; i < 256; i++) {
+  byteToHex.push((i + 0x100).toString(16).slice(1));
+}
+
+// Lookup table: char code -> hex digit value (-1 for non-hex characters)
+const hexValue = new Int8Array(256).fill(-1);
+for (let i = 0; i < 10; i++) {
+  hexValue[0x30 + i] = i; // '0'-'9'
+}
+for (let i = 0; i < 6; i++) {
+  hexValue[0x41 + i] = 10 + i; // 'A'-'F'
+  hexValue[0x61 + i] = 10 + i; // 'a'-'f'
+}
+
 type NativeGetRandomValues = (bytes: Uint8Array) => Uint8Array;
-type NativeCryptoMethods = {
-  getRandomValues?: NativeGetRandomValues;
-  randomUUID?: NativeUUIDFunction;
-  randomUUIDv7?: NativeUUIDFunction;
-};
 
 type GlobalWithNodeProcess = typeof globalThis & {
   process?: {
@@ -335,69 +341,36 @@ type GlobalWithNodeProcess = typeof globalThis & {
   };
 };
 
-type GlobalCryptoWithUUID = Crypto & {
-  randomUUID?: NativeUUIDFunction;
-  randomUUIDv7?: NativeUUIDFunction;
-};
+let cachedGetRandomValues: NativeGetRandomValues | null | undefined;
 
-let cachedNativeCryptoMethods: NativeCryptoMethods | undefined;
+function getNativeGetRandomValues(): NativeGetRandomValues | null {
+  if (cachedGetRandomValues !== undefined) return cachedGetRandomValues;
 
-function getNativeCryptoMethods(): NativeCryptoMethods {
-  if (cachedNativeCryptoMethods) return cachedNativeCryptoMethods;
-
-  const methods: NativeCryptoMethods = {};
-  const globalCrypto =
-    typeof crypto !== 'undefined'
-      ? (crypto as GlobalCryptoWithUUID)
-      : undefined;
-
-  if (typeof globalCrypto?.getRandomValues === 'function') {
-    methods.getRandomValues = globalCrypto.getRandomValues.bind(
-      globalCrypto
+  let getRandomValues: NativeGetRandomValues | null = null;
+  if (
+    typeof crypto !== 'undefined' &&
+    typeof crypto.getRandomValues === 'function'
+  ) {
+    getRandomValues = crypto.getRandomValues.bind(
+      crypto
     ) as NativeGetRandomValues;
-  }
-  if (typeof globalCrypto?.randomUUID === 'function') {
-    methods.randomUUID = globalCrypto.randomUUID.bind(globalCrypto);
-  }
-  if (typeof globalCrypto?.randomUUIDv7 === 'function') {
-    methods.randomUUIDv7 = globalCrypto.randomUUIDv7.bind(globalCrypto);
-  }
-
-  const getBuiltinModule = (globalThis as GlobalWithNodeProcess).process
-    ?.getBuiltinModule;
-  if (typeof getBuiltinModule === 'function') {
-    const nodeCrypto = getBuiltinModule('node:crypto') as
-      | (NativeCryptoMethods & { webcrypto?: Crypto })
-      | undefined;
-    if (typeof nodeCrypto?.webcrypto?.getRandomValues === 'function') {
-      methods.getRandomValues ??= nodeCrypto.webcrypto.getRandomValues.bind(
-        nodeCrypto.webcrypto
-      ) as NativeGetRandomValues;
-    }
-    if (typeof nodeCrypto?.randomUUID === 'function') {
-      methods.randomUUID ??= nodeCrypto.randomUUID;
-    }
-    if (typeof nodeCrypto?.randomUUIDv7 === 'function') {
-      methods.randomUUIDv7 = nodeCrypto.randomUUIDv7;
+  } else {
+    const getBuiltinModule = (globalThis as GlobalWithNodeProcess).process
+      ?.getBuiltinModule;
+    if (typeof getBuiltinModule === 'function') {
+      const nodeCrypto = getBuiltinModule('node:crypto') as
+        | { webcrypto?: Crypto }
+        | undefined;
+      if (typeof nodeCrypto?.webcrypto?.getRandomValues === 'function') {
+        getRandomValues = nodeCrypto.webcrypto.getRandomValues.bind(
+          nodeCrypto.webcrypto
+        ) as NativeGetRandomValues;
+      }
     }
   }
 
-  cachedNativeCryptoMethods = methods;
-  return methods;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  // Use Uint8Array.prototype.toHex if available (newer JavaScript environments)
-  if (hasNativeToHex) {
-    return (bytes as Uint8Array & { toHex(): string }).toHex();
-  }
-  // Fallback implementation for older environments
-  const hexChars = '0123456789abcdef';
-  let result = '';
-  for (const b of bytes) {
-    result += hexChars[(b >> 4) & 0x0f] + hexChars[b & 0x0f];
-  }
-  return result;
+  cachedGetRandomValues = getRandomValues;
+  return getRandomValues;
 }
 
 function hexToBytes(hex: string): Uint8Array {
@@ -417,23 +390,65 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
+// Pre-filled pool of random bytes. Refilling the pool in bulk amortizes the
+// per-call overhead of crypto.getRandomValues, which dominates the cost of
+// generating a single UUID.
+const RANDOM_POOL_SIZE = 4096;
+let randomPool: Uint8Array | undefined;
+let randomPoolOffset = 0;
+
 function getRandomBytes(length: number): Uint8Array {
   const bytes = new Uint8Array(length);
-  const getRandomValues = getNativeCryptoMethods().getRandomValues;
-  if (getRandomValues) {
+  const getRandomValues = getNativeGetRandomValues();
+  if (getRandomValues == null) {
+    // Fallback for environments without crypto
+    for (let i = 0; i < length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+    return bytes;
+  }
+  if (length > RANDOM_POOL_SIZE) {
     getRandomValues(bytes);
     return bytes;
   }
-  // Fallback for environments without crypto
-  for (let i = 0; i < length; i++) {
-    bytes[i] = Math.floor(Math.random() * 256);
+  let pool = randomPool;
+  if (pool === undefined || randomPoolOffset + length > RANDOM_POOL_SIZE) {
+    pool = randomPool ??= new Uint8Array(RANDOM_POOL_SIZE);
+    getRandomValues(pool);
+    randomPoolOffset = 0;
   }
+  // Plain loop instead of set(subarray(...)) to avoid the view allocation
+  const offset = randomPoolOffset;
+  for (let i = 0; i < length; i++) {
+    bytes[i] = pool[offset + i];
+  }
+  randomPoolOffset = offset + length;
   return bytes;
 }
 
 function formatUUID(bytes: Uint8Array): string {
-  const hex = bytesToHex(bytes);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  return (
+    byteToHex[bytes[0]] +
+    byteToHex[bytes[1]] +
+    byteToHex[bytes[2]] +
+    byteToHex[bytes[3]] +
+    '-' +
+    byteToHex[bytes[4]] +
+    byteToHex[bytes[5]] +
+    '-' +
+    byteToHex[bytes[6]] +
+    byteToHex[bytes[7]] +
+    '-' +
+    byteToHex[bytes[8]] +
+    byteToHex[bytes[9]] +
+    '-' +
+    byteToHex[bytes[10]] +
+    byteToHex[bytes[11]] +
+    byteToHex[bytes[12]] +
+    byteToHex[bytes[13]] +
+    byteToHex[bytes[14]] +
+    byteToHex[bytes[15]]
+  );
 }
 
 // Helper to check if value is ArrayBufferView
@@ -449,29 +464,29 @@ function uuidBytesToUint8Array(value: UUIDBytes): Uint8Array | undefined {
   return undefined;
 }
 
-// Returns the data bit mask for byte 8 based on variant
-function getVariantDataMask(variant: UUIDVariant): number {
-  switch (variant) {
-    case 'NCS':
-      return 0x7f; // 0xxxxxxx → 7 data bits
-    case 'Microsoft':
-      return 0x1f; // 110xxxxx → 5 data bits
-    case 'Reserved':
-      return 0x1f; // 111xxxxx → 5 data bits
-    case 'RFC4122':
-    default:
-      return 0x3f; // 10xxxxxx → 6 data bits
-  }
-}
+// Data bit mask for byte 8 based on variant
+const VARIANT_DATA_MASK: Record<UUIDVariant, number> = {
+  NCS: 0x7f, // 0xxxxxxx → 7 data bits
+  RFC4122: 0x3f, // 10xxxxxx → 6 data bits
+  Microsoft: 0x1f, // 110xxxxx → 5 data bits
+  Reserved: 0x1f, // 111xxxxx → 5 data bits
+};
 
-function getVariantDataMask16(variant: UUIDVariant): number {
-  return (getVariantDataMask(variant) << 8) | 0xff;
-}
+// 16-bit mask for bytes 8-9 (variant data bits in byte 8 + byte 9)
+const VARIANT_DATA_MASK_16: Record<UUIDVariant, number> = {
+  NCS: 0x7fff,
+  RFC4122: 0x3fff,
+  Microsoft: 0x1fff,
+  Reserved: 0x1fff,
+};
 
-// Returns a 64-bit BigInt mask for bytes 8-15 (variant data bits in byte 8 + bytes 9-15)
-function getVariantDataMask64(variant: UUIDVariant): bigint {
-  return (BigInt(getVariantDataMask(variant)) << 56n) | 0x00ffffffffffffffn;
-}
+// 64-bit mask for bytes 8-15 (variant data bits in byte 8 + bytes 9-15)
+const VARIANT_DATA_MASK_64: Record<UUIDVariant, bigint> = {
+  NCS: 0x7fffffffffffffffn,
+  RFC4122: 0x3fffffffffffffffn,
+  Microsoft: 0x1fffffffffffffffn,
+  Reserved: 0x1fffffffffffffffn,
+};
 
 // Encodes variant bits + data bits into byte 8
 function encodeVariantByte(variant: UUIDVariant, dataBits: number): number {
@@ -577,7 +592,40 @@ function setVariantAnd64Bits(
 const UUID_REGEX =
   /^[^0-9a-z-]*([0-9a-f]{8})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{4})-?([0-9a-f]{12})[^0-9a-z-]*$/i;
 
+// Fast path for the canonical 8-4-4-4-12 form and the 32-character
+// undashed form. Returns undefined for any other shape so the caller can
+// fall back to the more permissive regex.
+function parseUUIDStringFast(input: string): Uint8Array | undefined {
+  const length = input.length;
+  if (length !== 36 && length !== 32) return undefined;
+  const hasDashes = length === 36;
+  if (
+    hasDashes &&
+    (input.charCodeAt(8) !== 0x2d ||
+      input.charCodeAt(13) !== 0x2d ||
+      input.charCodeAt(18) !== 0x2d ||
+      input.charCodeAt(23) !== 0x2d)
+  ) {
+    return undefined;
+  }
+  const bytes = new Uint8Array(16);
+  let i = 0;
+  for (let j = 0; j < 16; j++) {
+    if (hasDashes && (i === 8 || i === 13 || i === 18 || i === 23)) i++;
+    // Char codes above 255 read past the table and yield undefined,
+    // which fails the >= 0 check below
+    const hi = hexValue[input.charCodeAt(i)];
+    const lo = hexValue[input.charCodeAt(i + 1)];
+    if (!(hi >= 0 && lo >= 0)) return undefined;
+    bytes[j] = (hi << 4) | lo;
+    i += 2;
+  }
+  return bytes;
+}
+
 function parseUUIDString(input: string): Uint8Array {
+  const fast = parseUUIDStringFast(input);
+  if (fast) return fast;
   const match = input.match(UUID_REGEX);
   if (!match) {
     throw new Error(`Invalid UUID string: ${input}`);
@@ -600,101 +648,94 @@ function detectVariant(bytes: Uint8Array): UUIDVariant {
 
 function parseToStructure(bytes: Uint8Array): ParsedUUID {
   const version = detectVersion(bytes);
+  const variant = detectVariant(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
   switch (version) {
     case 1: {
-      const variant = detectVariant(bytes);
       return {
         ver: 1,
         time_low: view.getUint32(0),
         time_mid: view.getUint16(4),
         time_high: view.getUint16(6) & 0x0fff,
         var: variant,
-        clock_seq: view.getUint16(8) & getVariantDataMask16(variant),
+        clock_seq: view.getUint16(8) & VARIANT_DATA_MASK_16[variant],
         node: view.getUint16(10) * 0x10000_0000 + view.getUint32(12),
       };
     }
 
     case 2: {
-      const variant = detectVariant(bytes);
       return {
         ver: 2,
         local_id: view.getUint32(0),
         time_mid: view.getUint16(4),
         time_high: view.getUint16(6) & 0x0fff,
         var: variant,
-        clock_seq_high: bytes[8] & getVariantDataMask(variant),
+        clock_seq_high: bytes[8] & VARIANT_DATA_MASK[variant],
         local_domain: bytes[9],
         node: view.getUint16(10) * 0x10000_0000 + view.getUint32(12),
       };
     }
 
     case 3: {
-      const variant = detectVariant(bytes);
       return {
         ver: 3,
         md5_high: view.getUint16(0) * 0x10000_0000 + view.getUint32(2),
         md5_mid: view.getUint16(6) & 0x0fff,
         var: variant,
-        md5_low: view.getBigUint64(8) & getVariantDataMask64(variant),
+        md5_low: view.getBigUint64(8) & VARIANT_DATA_MASK_64[variant],
       };
     }
 
     case 4: {
-      const variant = detectVariant(bytes);
       return {
         ver: 4,
         random_a: view.getUint16(0) * 0x10000_0000 + view.getUint32(2),
         random_b: view.getUint16(6) & 0x0fff,
         var: variant,
-        random_c: view.getBigUint64(8) & getVariantDataMask64(variant),
+        random_c: view.getBigUint64(8) & VARIANT_DATA_MASK_64[variant],
       };
     }
 
     case 5: {
-      const variant = detectVariant(bytes);
       return {
         ver: 5,
         sha1_high: view.getUint16(0) * 0x10000_0000 + view.getUint32(2),
         sha1_mid: view.getUint16(6) & 0x0fff,
         var: variant,
-        sha1_low: view.getBigUint64(8) & getVariantDataMask64(variant),
+        sha1_low: view.getBigUint64(8) & VARIANT_DATA_MASK_64[variant],
       };
     }
 
     case 6: {
-      const variant = detectVariant(bytes);
       return {
         ver: 6,
         time_high: view.getUint32(0),
         time_mid: view.getUint16(4),
         time_low: view.getUint16(6) & 0x0fff,
         var: variant,
-        clock_seq: view.getUint16(8) & getVariantDataMask16(variant),
+        clock_seq: view.getUint16(8) & VARIANT_DATA_MASK_16[variant],
         node: view.getUint16(10) * 0x10000_0000 + view.getUint32(12),
       };
     }
 
     case 7: {
-      const variant = detectVariant(bytes);
       return {
         ver: 7,
         unix_ts_ms: view.getUint16(0) * 0x10000_0000 + view.getUint32(2),
         rand_a: view.getUint16(6) & 0x0fff,
         var: variant,
-        rand_b: view.getBigUint64(8) & getVariantDataMask64(variant),
+        rand_b: view.getBigUint64(8) & VARIANT_DATA_MASK_64[variant],
       };
     }
 
     case 8: {
-      const variant = detectVariant(bytes);
       return {
         ver: 8,
         custom_a: view.getUint16(0) * 0x10000_0000 + view.getUint32(2),
         custom_b: view.getUint16(6) & 0x0fff,
         var: variant,
-        custom_c: view.getBigUint64(8) & getVariantDataMask64(variant),
+        custom_c: view.getBigUint64(8) & VARIANT_DATA_MASK_64[variant],
       };
     }
 
@@ -734,6 +775,26 @@ function convertUUIDv1TimestampToUnixTimestamp(uuid_ts: bigint): number {
   return Number((uuid_ts - UUID_EPOCH_DIFF) / 10000n);
 }
 
+// Normalizes a unix_ts_ms option value to bigint milliseconds.
+// Returns undefined for missing or unrecognized values.
+function toUnixTsMs(value: unknown): bigint | undefined {
+  if (value instanceof Date) return BigInt(value.getTime());
+  if (typeof value === 'number') return BigInt(value);
+  if (typeof value === 'bigint') return value;
+  return undefined;
+}
+
+// Resolves a 60-bit Gregorian timestamp (100ns intervals since UUID epoch)
+// from time/unix_ts_ms options, defaulting to the current time
+function resolveGregorianTime(options: {
+  time?: unknown;
+  unix_ts_ms?: unknown;
+}): bigint {
+  if (typeof options.time === 'bigint') return options.time;
+  const unix_ts_ms = toUnixTsMs(options.unix_ts_ms) ?? BigInt(Date.now());
+  return convertUnixTimestampToUUIDv1Timestamp(unix_ts_ms);
+}
+
 function generateV1(options: UUIDv1Options): Uint8Array {
   const bytes = new Uint8Array(16);
   const view = new DataView(bytes.buffer);
@@ -751,26 +812,8 @@ function generateV1(options: UUIDv1Options): Uint8Array {
     time_high = options.time_high;
     time_mid = options.time_mid;
     time_low = options.time_low;
-  } else if ('time' in options && typeof options.time === 'bigint') {
-    time_high = Number((options.time >> 48n) & 0xfffn);
-    time_mid = Number((options.time >> 32n) & 0xffffn);
-    time_low = Number(options.time & 0xffffffffn);
   } else {
-    let unix_ts_ms: bigint | undefined = undefined;
-    if ('unix_ts_ms' in options) {
-      if (options.unix_ts_ms instanceof Date) {
-        unix_ts_ms = BigInt(options.unix_ts_ms.getTime());
-      } else if (typeof options.unix_ts_ms === 'number') {
-        unix_ts_ms = BigInt(options.unix_ts_ms);
-      } else if (typeof options.unix_ts_ms === 'bigint') {
-        unix_ts_ms = options.unix_ts_ms;
-      }
-    }
-    if (unix_ts_ms === undefined) {
-      // Default to current timestamp when no time information is provided
-      unix_ts_ms = BigInt(Date.now());
-    }
-    const time = convertUnixTimestampToUUIDv1Timestamp(unix_ts_ms);
+    const time = resolveGregorianTime(options);
     time_high = Number((time >> 48n) & 0xfffn);
     time_mid = Number((time >> 32n) & 0xffffn);
     time_low = Number(time & 0xffffffffn);
@@ -814,25 +857,8 @@ function generateV2(options: UUIDv2Options): Uint8Array {
   if ('time_mid' in options && 'time_high' in options) {
     time_high = options.time_high;
     time_mid = options.time_mid;
-  } else if ('time' in options && typeof options.time === 'bigint') {
-    time_high = Number((options.time >> 48n) & 0xfffn);
-    time_mid = Number((options.time >> 32n) & 0xffffn);
   } else {
-    let unix_ts_ms: bigint | undefined = undefined;
-    if ('unix_ts_ms' in options) {
-      if (options.unix_ts_ms instanceof Date) {
-        unix_ts_ms = BigInt(options.unix_ts_ms.getTime());
-      } else if (typeof options.unix_ts_ms === 'number') {
-        unix_ts_ms = BigInt(options.unix_ts_ms);
-      } else if (typeof options.unix_ts_ms === 'bigint') {
-        unix_ts_ms = options.unix_ts_ms;
-      }
-    }
-    if (unix_ts_ms === undefined) {
-      // Default to current timestamp when no time information is provided
-      unix_ts_ms = BigInt(Date.now());
-    }
-    const time = convertUnixTimestampToUUIDv1Timestamp(unix_ts_ms);
+    const time = resolveGregorianTime(options);
     time_high = Number((time >> 48n) & 0xfffn);
     time_mid = Number((time >> 32n) & 0xffffn);
   }
@@ -863,38 +889,68 @@ function generateV2(options: UUIDv2Options): Uint8Array {
   return bytes;
 }
 
-function generateV3(options: UUIDv3Options): Uint8Array {
+// Shared layout for v3/v5/v8 field options:
+// 48-bit high (bytes 0-5) + 12-bit mid (bytes 6-7) + 61-63 bit low (bytes 8-15)
+function generateFromHighMidLow(
+  version: UUIDVersion,
+  variant: UUIDVariant,
+  high: number | bigint | UUIDBytes,
+  mid: number | bigint | UUIDBytes,
+  low: bigint | UUIDBytes,
+  fieldNames: readonly [string, string, string]
+): Uint8Array {
   const bytes = new Uint8Array(16);
   const view = new DataView(bytes.buffer);
-  const variant = options.var ?? 'RFC4122';
-
-  if ('md5_high' in options && 'md5_mid' in options && 'md5_low' in options) {
-    // FieldOptions
-    // md5_high: 48 bits (bytes 0-5)
-    set48Bits(bytes, view, 0, options.md5_high, 'md5_high');
-
-    // md5_mid: 12 bits (bytes 6-7, lower 12 bits)
-    setVersionAnd12Bits(bytes, 3, options.md5_mid, 'md5_mid');
-
-    // md5_low: 64 bits (bytes 8-15)
-    setVariantAnd64Bits(bytes, view, variant, options.md5_low, 'md5_low');
-  } else if ('hash' in options) {
-    // HashOptions
-    const hash = uuidBytesToUint8Array(options.hash);
-    if (hash == null) {
-      throw new Error('Invalid hash type');
-    }
-    if (hash.length < 16) {
-      throw new Error('v3 requires a 16-byte pre-computed MD5 hash');
-    }
-    bytes.set(hash.subarray(0, 16));
-    bytes[6] = (bytes[6] & 0x0f) | 0x30;
-    bytes[8] = encodeVariantByte(variant, bytes[8]);
-  } else {
-    throw new Error('v3 requires a 16-byte pre-computed MD5 hash');
-  }
-
+  set48Bits(bytes, view, 0, high, fieldNames[0]);
+  setVersionAnd12Bits(bytes, version, mid, fieldNames[1]);
+  setVariantAnd64Bits(bytes, view, variant, low, fieldNames[2]);
   return bytes;
+}
+
+// Shared layout for v3/v4/v5/v8 raw options:
+// 16 bytes of data with version/variant bits overwritten
+function generateFromRaw16(
+  version: UUIDVersion,
+  variant: UUIDVariant,
+  raw: UUIDBytes,
+  fieldName: string,
+  lengthError: string
+): Uint8Array {
+  const data = uuidBytesToUint8Array(raw);
+  if (data == null) {
+    throw new Error(`Invalid ${fieldName} type`);
+  }
+  if (data.length < 16) {
+    throw new Error(lengthError);
+  }
+  const bytes = data.slice(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | (version << 4);
+  bytes[8] = encodeVariantByte(variant, bytes[8]);
+  return bytes;
+}
+
+function generateV3(options: UUIDv3Options): Uint8Array {
+  const variant = options.var ?? 'RFC4122';
+  if ('md5_high' in options && 'md5_mid' in options && 'md5_low' in options) {
+    return generateFromHighMidLow(
+      3,
+      variant,
+      options.md5_high,
+      options.md5_mid,
+      options.md5_low,
+      ['md5_high', 'md5_mid', 'md5_low']
+    );
+  }
+  if ('hash' in options) {
+    return generateFromRaw16(
+      3,
+      variant,
+      options.hash,
+      'hash',
+      'v3 requires a 16-byte pre-computed MD5 hash'
+    );
+  }
+  throw new Error('v3 requires a 16-byte pre-computed MD5 hash');
 }
 
 function generateV4(options: UUIDv4Options): Uint8Array {
@@ -902,17 +958,13 @@ function generateV4(options: UUIDv4Options): Uint8Array {
 
   if ('random' in options) {
     // RandomOptions
-    const raw = uuidBytesToUint8Array(options.random);
-    if (raw == null) {
-      throw new Error('Invalid random type');
-    }
-    if (raw.length < 16) {
-      throw new Error('Random data must be at least 16 bytes');
-    }
-    const bytes = raw.slice(0, 16);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = encodeVariantByte(variant, bytes[8]);
-    return bytes;
+    return generateFromRaw16(
+      4,
+      variant,
+      options.random,
+      'random',
+      'Random data must be at least 16 bytes'
+    );
   }
 
   // FieldOptions — generate random bytes as default, then overwrite with provided values
@@ -946,45 +998,33 @@ function generateV4(options: UUIDv4Options): Uint8Array {
 }
 
 function generateV5(options: UUIDv5Options): Uint8Array {
-  const bytes = new Uint8Array(16);
-  const view = new DataView(bytes.buffer);
   const variant = options.var ?? 'RFC4122';
-
   if (
     'sha1_high' in options &&
     'sha1_mid' in options &&
     'sha1_low' in options
   ) {
-    // FieldOptions
-    // sha1_high: 48 bits (bytes 0-5)
-    set48Bits(bytes, view, 0, options.sha1_high, 'sha1_high');
-
-    // sha1_mid: 12 bits (bytes 6-7, lower 12 bits)
-    setVersionAnd12Bits(bytes, 5, options.sha1_mid, 'sha1_mid');
-
-    // sha1_low: 64 bits (bytes 8-15)
-    setVariantAnd64Bits(bytes, view, variant, options.sha1_low, 'sha1_low');
-  } else if ('hash' in options) {
-    // HashOptions
-    const hash = uuidBytesToUint8Array(options.hash);
-    if (hash == null) {
-      throw new Error('Invalid hash type');
-    }
-    if (hash.length < 16) {
-      throw new Error(
-        'v5 requires a 16-byte pre-computed SHA-1 hash (first 16 bytes)'
-      );
-    }
-    bytes.set(hash.subarray(0, 16));
-    bytes[6] = (bytes[6] & 0x0f) | 0x50;
-    bytes[8] = encodeVariantByte(variant, bytes[8]);
-  } else {
-    throw new Error(
+    return generateFromHighMidLow(
+      5,
+      variant,
+      options.sha1_high,
+      options.sha1_mid,
+      options.sha1_low,
+      ['sha1_high', 'sha1_mid', 'sha1_low']
+    );
+  }
+  if ('hash' in options) {
+    return generateFromRaw16(
+      5,
+      variant,
+      options.hash,
+      'hash',
       'v5 requires a 16-byte pre-computed SHA-1 hash (first 16 bytes)'
     );
   }
-
-  return bytes;
+  throw new Error(
+    'v5 requires a 16-byte pre-computed SHA-1 hash (first 16 bytes)'
+  );
 }
 
 function generateV6(options: UUIDv6Options): Uint8Array {
@@ -1003,27 +1043,9 @@ function generateV6(options: UUIDv6Options): Uint8Array {
     time_high = options.time_high;
     time_mid = options.time_mid;
     time_low = options.time_low;
-  } else if ('time' in options && typeof options.time === 'bigint') {
-    // v6 time layout: time_high(32) | time_mid(16) | time_low(12) = 60 bits
-    time_high = Number((options.time >> 28n) & 0xffffffffn);
-    time_mid = Number((options.time >> 12n) & 0xffffn);
-    time_low = Number(options.time & 0xfffn);
   } else {
-    let unix_ts_ms: bigint | undefined = undefined;
-    if ('unix_ts_ms' in options) {
-      if (options.unix_ts_ms instanceof Date) {
-        unix_ts_ms = BigInt(options.unix_ts_ms.getTime());
-      } else if (typeof options.unix_ts_ms === 'number') {
-        unix_ts_ms = BigInt(options.unix_ts_ms);
-      } else if (typeof options.unix_ts_ms === 'bigint') {
-        unix_ts_ms = options.unix_ts_ms;
-      }
-    }
-    if (unix_ts_ms === undefined) {
-      // Default to current timestamp when no time information is provided
-      unix_ts_ms = BigInt(Date.now());
-    }
-    const time = convertUnixTimestampToUUIDv1Timestamp(unix_ts_ms);
+    // v6 time layout: time_high(32) | time_mid(16) | time_low(12) = 60 bits
+    const time = resolveGregorianTime(options);
     time_high = Number((time >> 28n) & 0xffffffffn);
     time_mid = Number((time >> 12n) & 0xffffn);
     time_low = Number(time & 0xfffn);
@@ -1063,16 +1085,8 @@ function generateV7(options: UUIDv7Options): Uint8Array {
   let setRandom = false;
 
   // unix_ts_ms: 48 bits (bytes 0-5)
-  let unix_ts_ms: bigint | undefined = undefined;
-  if ('unix_ts_ms' in options) {
-    if (options.unix_ts_ms instanceof Date) {
-      unix_ts_ms = BigInt(options.unix_ts_ms.getTime());
-    } else if (typeof options.unix_ts_ms === 'number') {
-      unix_ts_ms = BigInt(options.unix_ts_ms);
-    } else if (typeof options.unix_ts_ms === 'bigint') {
-      unix_ts_ms = options.unix_ts_ms;
-    }
-  }
+  const unix_ts_ms =
+    'unix_ts_ms' in options ? toUnixTsMs(options.unix_ts_ms) : undefined;
   if (
     unix_ts_ms === undefined &&
     !('random' in options) &&
@@ -1142,37 +1156,27 @@ function generateV7(options: UUIDv7Options): Uint8Array {
 }
 
 function generateV8(options: UUIDv8Options): Uint8Array {
-  const bytes = new Uint8Array(16);
-  const view = new DataView(bytes.buffer);
   const variant = options.var ?? 'RFC4122';
-
   if ('custom_a' in options && 'custom_b' in options && 'custom_c' in options) {
-    // FieldOptions
-    // custom_a: 48 bits (bytes 0-5)
-    set48Bits(bytes, view, 0, options.custom_a, 'custom_a');
-
-    // custom_b: 12 bits (bytes 6-7, lower 12 bits)
-    setVersionAnd12Bits(bytes, 8, options.custom_b, 'custom_b');
-
-    // custom_c: 64 bits (bytes 8-15)
-    setVariantAnd64Bits(bytes, view, variant, options.custom_c, 'custom_c');
-  } else if ('custom' in options) {
-    // CustomOptions
-    const custom = uuidBytesToUint8Array(options.custom);
-    if (custom == null) {
-      throw new Error('Invalid custom type');
-    }
-    if (custom.length < 16) {
-      throw new Error('v8 requires 16 bytes of custom data');
-    }
-    bytes.set(custom.subarray(0, 16));
-    bytes[6] = (bytes[6] & 0x0f) | 0x80;
-    bytes[8] = encodeVariantByte(variant, bytes[8]);
-  } else {
-    throw new Error('v8 requires 16 bytes of custom data');
+    return generateFromHighMidLow(
+      8,
+      variant,
+      options.custom_a,
+      options.custom_b,
+      options.custom_c,
+      ['custom_a', 'custom_b', 'custom_c']
+    );
   }
-
-  return bytes;
+  if ('custom' in options) {
+    return generateFromRaw16(
+      8,
+      variant,
+      options.custom,
+      'custom',
+      'v8 requires 16 bytes of custom data'
+    );
+  }
+  throw new Error('v8 requires 16 bytes of custom data');
 }
 
 function generateNilUUID(): Uint8Array {
@@ -1188,37 +1192,19 @@ function generateMaxUUID(): Uint8Array {
 // Last generated state for UUID v7 (to ensure monotonicity)
 const lastV7 = { unix_ts_ms: 0, rand_a: 0, perf_now: 0 };
 
+const hasPerformanceNow =
+  typeof performance !== 'undefined' && typeof performance.now === 'function';
+
 // Generate a random UUID (default v4) with optional version and variant
 function generateRandomUUID(options?: RandomUUIDOptions): Uint8Array {
   const version = options?.ver ?? 4;
   const variant = options?.var ?? 'RFC4122';
-
-  let bytes: Uint8Array;
-  const nativeUUID = getNativeCryptoMethods();
-  const nativeRandomUUID =
-    version === 7 && variant === 'RFC4122'
-      ? nativeUUID.randomUUIDv7
-      : nativeUUID.randomUUID;
-  const hasNativeV7Bytes =
-    version === 7 &&
-    variant === 'RFC4122' &&
-    nativeRandomUUID !== undefined &&
-    nativeRandomUUID === nativeUUID.randomUUIDv7;
-
-  if (nativeRandomUUID) {
-    bytes = parseUUIDString(nativeRandomUUID());
-  } else {
-    // Fallback: generate UUID v4 using getRandomBytes
-    bytes = getRandomBytes(16);
-  }
+  const bytes = getRandomBytes(16);
 
   if (version === 7) {
-    const view = new DataView(bytes.buffer);
-    const perf_now = typeof performance !== 'undefined' ? performance.now() : 0;
-    let unix_ts_ms = hasNativeV7Bytes
-      ? view.getUint16(0) * 0x10000_0000 + view.getUint32(2)
-      : Date.now();
-    let rand_a = view.getUint16(6) & 0x0fff;
+    const perf_now = hasPerformanceNow ? performance.now() : 0;
+    let unix_ts_ms = Date.now();
+    let rand_a = ((bytes[6] << 8) | bytes[7]) & 0x0fff;
     if (unix_ts_ms <= lastV7.unix_ts_ms) {
       unix_ts_ms = lastV7.unix_ts_ms;
       const perfDelta = perf_now - lastV7.perf_now;
@@ -1230,9 +1216,15 @@ function generateRandomUUID(options?: RandomUUIDOptions): Uint8Array {
     lastV7.unix_ts_ms = unix_ts_ms;
     lastV7.rand_a = rand_a;
     lastV7.perf_now = perf_now;
-    view.setUint16(0, Math.trunc(unix_ts_ms / 0x10000_0000));
-    view.setUint32(2, unix_ts_ms & 0xffff_ffff);
-    view.setUint16(6, 0x7000 | rand_a);
+    // Direct byte writes (assignment truncates and wraps to uint8)
+    bytes[0] = unix_ts_ms / 0x100_0000_0000;
+    bytes[1] = unix_ts_ms / 0x1_0000_0000;
+    bytes[2] = unix_ts_ms >>> 24;
+    bytes[3] = unix_ts_ms >>> 16;
+    bytes[4] = unix_ts_ms >>> 8;
+    bytes[5] = unix_ts_ms;
+    bytes[6] = 0x70 | (rand_a >> 8);
+    bytes[7] = rand_a & 0xff;
   } else {
     // Set version
     bytes[6] = (bytes[6] & 0x0f) | (version << 4);
@@ -1293,11 +1285,21 @@ function isArrayBufferLike(value: unknown): value is ArrayBufferLike {
 // UUID Class
 // =============================================================================
 
+// When set, the next UUID construction adopts these bytes directly instead of
+// interpreting its input. Set immediately before a `new UUID()` call by the
+// static factory methods and consumed synchronously by the constructor.
+let adoptBytes: Uint8Array | undefined;
+
 export class UUID {
   protected readonly bytes: Uint8Array;
 
   constructor(input?: UUIDInput) {
-    if (input instanceof UUID) {
+    if (adoptBytes !== undefined) {
+      // Internal fast path: adopt freshly generated bytes directly,
+      // skipping input detection and the defensive copy
+      this.bytes = adoptBytes;
+      adoptBytes = undefined;
+    } else if (input instanceof UUID) {
       // Copy from existing UUID
       this.bytes = input.toBytes();
     } else if (typeof input === 'string') {
@@ -1389,30 +1391,37 @@ export class UUID {
   }
 
   equals(other: UUID): boolean {
-    return (
-      this.bytes.length === other.bytes.length &&
-      this.bytes.every((b, i) => b === other.bytes[i])
-    );
+    for (let i = 0; i < 16; i++) {
+      if (this.bytes[i] !== other.bytes[i]) return false;
+    }
+    return true;
   }
 
   isNil(): boolean {
-    return this.bytes.every((b) => b === 0);
+    for (let i = 0; i < 16; i++) {
+      if (this.bytes[i] !== 0) return false;
+    }
+    return true;
   }
 
   isMax(): boolean {
-    return this.bytes.every((b) => b === 0xff);
+    for (let i = 0; i < 16; i++) {
+      if (this.bytes[i] !== 0xff) return false;
+    }
+    return true;
   }
 
   static nil(): UUID {
-    return new UUID(generateNilUUID());
+    return new UUID(null);
   }
 
   static max(): UUID {
-    return new UUID(generateMaxUUID());
+    return new UUID({ ver: 15 });
   }
 
   static random(options?: RandomUUIDOptions): UUID {
-    return new UUID(generateRandomUUID(options));
+    adoptBytes = generateRandomUUID(options);
+    return new UUID();
   }
 }
 

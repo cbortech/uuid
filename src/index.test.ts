@@ -1196,6 +1196,23 @@ describe('UUID Methods', () => {
     );
   });
 
+  test('toString should reflect byte mutations made by a subclass', () => {
+    // bytes is protected (not private), so subclasses may mutate its
+    // contents; toString() must not return a stale cached string
+    class MutableUUID extends UUID {
+      setByte(index: number, value: number): void {
+        this.bytes[index] = value;
+      }
+    }
+
+    const uuid = new MutableUUID('550e8400-e29b-41d4-a716-446655440000');
+    expect(uuid.toString()).toBe('550e8400-e29b-41d4-a716-446655440000');
+
+    uuid.setByte(0, 0xff);
+    expect(uuid.toString()).toBe('ff0e8400-e29b-41d4-a716-446655440000');
+    expect(uuid.toJSON()).toBe('ff0e8400-e29b-41d4-a716-446655440000');
+  });
+
   test('toBytes should return 16-byte array', () => {
     const uuid = new UUID({ ver: 4 });
     const bytes = uuid.toBytes();
@@ -1632,24 +1649,21 @@ describe('UUID.random()', () => {
   });
 
   test.runIf(typeof process !== 'undefined')(
-    'should use native randomUUIDv7 when available',
+    'should fall back to node:crypto webcrypto when global crypto is unavailable',
     async () => {
-      const originalGetBuiltinModule = process.getBuiltinModule;
-      const nativeUUIDv7 = 'ffffffff-ffff-7abc-8def-0123456789ab';
-
-      process.getBuiltinModule = ((id: string) => {
-        if (id === 'node:crypto') {
-          return { randomUUIDv7: () => nativeUUIDv7 };
-        }
-        return originalGetBuiltinModule(id);
-      }) as typeof process.getBuiltinModule;
+      vi.stubGlobal('crypto', undefined);
 
       try {
         vi.resetModules();
         const { UUID: FreshUUID } = await import('./index');
-        expect(FreshUUID.random({ ver: 7 }).toString()).toBe(nativeUUIDv7);
+        const v4 = FreshUUID.random();
+        expect(v4.getVersion()).toBe(4);
+        expect(v4.getVariant()).toBe('RFC4122');
+        const v7 = FreshUUID.random({ ver: 7 });
+        expect(v7.getVersion()).toBe(7);
+        expect(v7.getVariant()).toBe('RFC4122');
       } finally {
-        process.getBuiltinModule = originalGetBuiltinModule;
+        vi.unstubAllGlobals();
         vi.resetModules();
       }
     }
