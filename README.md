@@ -1,9 +1,17 @@
 # @cbortech/uuid
 
+[![npm version](https://img.shields.io/npm/v/%40cbortech%2Fuuid)](https://www.npmjs.com/package/@cbortech/uuid)
+![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
+[![types](https://img.shields.io/npm/types/%40cbortech%2Fuuid)](https://www.npmjs.com/package/@cbortech/uuid)
+[![license](https://img.shields.io/npm/l/%40cbortech%2Fuuid)](./LICENSE)
+![platform](https://img.shields.io/badge/platform-Node.js%20%7C%20Browser-blue)
+
 TypeScript library for generating, parsing, and inspecting UUIDs.
 
 This package supports UUID versions 1 through 8 as defined by RFC 9562, with
 convenient helpers for UUID v4 and monotonic UUID v7.
+
+A live playground is available at **https://cbor.tech/uuid/**.
 
 ## Install
 
