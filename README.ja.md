@@ -1,9 +1,17 @@
 # @cbortech/uuid
 
+[![npm version](https://img.shields.io/npm/v/%40cbortech%2Fuuid)](https://www.npmjs.com/package/@cbortech/uuid)
+![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
+[![types](https://img.shields.io/npm/types/%40cbortech%2Fuuid)](https://www.npmjs.com/package/@cbortech/uuid)
+[![license](https://img.shields.io/npm/l/%40cbortech%2Fuuid)](./LICENSE)
+![platform](https://img.shields.io/badge/platform-Node.js%20%7C%20Browser-blue)
+
 UUIDの生成、解析、確認を行うためのTypeScriptライブラリです。
 
 RFC 9562で定義されているUUIDバージョン1から8に対応しています。UUID v4と、
 単調増加するUUID v7を簡単に扱うためのヘルパーも提供します。
+
+プレイグラウンドを **https://cbor.tech/uuid/** で公開しています。
 
 ## インストール
 

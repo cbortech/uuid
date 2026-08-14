@@ -32,9 +32,7 @@ export interface UUIDv1UnixTsMsOptions {
 }
 
 export type UUIDv1Options =
-  | UUIDv1FieldOptions
-  | UUIDv1TimeOptions
-  | UUIDv1UnixTsMsOptions;
+  UUIDv1FieldOptions | UUIDv1TimeOptions | UUIDv1UnixTsMsOptions;
 
 export interface UUIDv2FieldOptions {
   ver: 2;
@@ -68,9 +66,7 @@ export interface UUIDv2UnixTsMsOptions {
 }
 
 export type UUIDv2Options =
-  | UUIDv2FieldOptions
-  | UUIDv2TimeOptions
-  | UUIDv2UnixTsMsOptions;
+  UUIDv2FieldOptions | UUIDv2TimeOptions | UUIDv2UnixTsMsOptions;
 
 export interface UUIDv3FieldOptions {
   ver: 3;
@@ -147,9 +143,7 @@ export interface UUIDv6UnixTsMsOptions {
 }
 
 export type UUIDv6Options =
-  | UUIDv6FieldOptions
-  | UUIDv6TimeOptions
-  | UUIDv6UnixTsMsOptions;
+  UUIDv6FieldOptions | UUIDv6TimeOptions | UUIDv6UnixTsMsOptions;
 
 export interface UUIDv7FieldOptions {
   ver: 7;
@@ -352,8 +346,7 @@ function getNativeGetRandomValues(): NativeGetRandomValues | null {
       ?.getBuiltinModule;
     if (typeof getBuiltinModule === 'function') {
       const nodeCrypto = getBuiltinModule('node:crypto') as
-        | { webcrypto?: Crypto }
-        | undefined;
+        { webcrypto?: Crypto } | undefined;
       if (typeof nodeCrypto?.webcrypto?.getRandomValues === 'function') {
         getRandomValues = nodeCrypto.webcrypto.getRandomValues.bind(
           nodeCrypto.webcrypto
